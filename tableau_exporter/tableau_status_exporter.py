@@ -3,7 +3,7 @@ import os
 import requests
 import logging
 from prometheus_client import generate_latest, REGISTRY
-from server_parser_status_metrics import TableauServerStatusParser
+from .server_parser_status_metrics import TableauServerStatusParser
 from prometheus_client.twisted import MetricsResource
 from twisted.web.server import Site
 from twisted.web.resource import Resource
@@ -13,27 +13,14 @@ import xml.etree.ElementTree as ET
 logger = logging.getLogger(__name__)
 
 class TokenManager(object):
-    def __init__(self, user, password, site, host, api_version, token_name=None, token_secret=None):
+    def __init__(self, user, password, site, host, api_version):
         self._token = None
+        self._creds = {}
+        self._creds['name'] = user
+        self._creds['password'] = password
+        self._creds['site'] = {'contentUrl': site}
         self._api_version = api_version
         self.host = host
-
-        if user and token_name:
-            raise ValueError('Either a user/password OR token name/secret should be provided, not both.')
-        elif user and password:
-            self._creds = {
-                'name': user,
-                'password': password,
-            }
-        elif token_name and token_secret:
-            self._creds = {
-                'personalAccessTokenName': token_name,
-                'personalAccessTokenSecret': token_secret,
-            }
-        else:
-            raise ValueError('Either a user/password OR token name/secret must be provided.')
-
-        self._creds['site'] = {'contentUrl': site}
 
     def _setup(self):
         body = {}
@@ -64,10 +51,9 @@ class TokenManager(object):
 
 class TableauMetricsCollector(object):
     '''collection of metrics for prometheus'''
-    def __init__(self, token_manager, verify_ssl=False):
+    def __init__(self, token_manager):
         logger.info('Initializing metrics collector')
         self.token_manager = token_manager
-        self.verify_ssl = verify_ssl
 
     def collect(self):
         '''collect metrics'''
@@ -78,7 +64,7 @@ class TableauMetricsCollector(object):
         for i in range(0,3):
             x = requests.get(check, headers={
                 "Cookie": 'workgroup_session_id={}'.format(self.token_manager.token)
-                }, verify=self.verify_ssl)
+                }, verify=False)
             xml_response = ET.fromstring(x.text)
 
             if 'error' == xml_response.tag:
@@ -102,10 +88,9 @@ class TableauMetricsCollector(object):
 
 def start_webserver(conf):
 
-    token_manager = TokenManager(
-        conf.get('tableau_user'), conf.get('tableau_password'), conf['site'], conf['server_host'], conf['api_version'],
-        token_name=conf.get('tableau_token_name'), token_secret=conf.get('tableau_token_secret'))
-    REGISTRY.register(TableauMetricsCollector(token_manager, verify_ssl=conf.get('verify_ssl', False)))
+    REGISTRY.register(TableauMetricsCollector(TokenManager(
+        conf['tableau_user'], conf['tableau_password'], conf['site'],
+        conf['server_host'], conf['api_version'])))
 
     # Start up the server to expose the metrics.
     root = Resource()
